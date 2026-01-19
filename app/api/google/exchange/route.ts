@@ -60,25 +60,39 @@ async function findCustomerByEmail(email: string) {
 
 async function createCustomer(input: {
   email: string;
-  firstName: string;
-  lastName: string;
+  firstName?: string;
+  lastName?: string;
 }) {
-  const m = `
-    mutation($input: CustomerInput!) {
+  const mutation = `
+    mutation ($input: CustomerInput!) {
       customerCreate(input: $input) {
-        customer { id }
-        userErrors { message }
+        customer {
+          id
+          email
+          verifiedEmail
+        }
+        userErrors {
+          field
+          message
+        }
       }
     }
   `;
-  const data = await shopifyGraphQL(m, {
-    input: { ...input, verifiedEmail: true },
+
+  const data = await shopifyGraphQL(mutation, {
+    input: {
+      email: input.email,
+      firstName: input.firstName,
+      lastName: input.lastName
+    }
   });
 
-  const err = data.customerCreate.userErrors?.[0];
-  if (err) throw new Error(err.message);
-  return data.customerCreate.customer.id as string;
+  const error = data.customerCreate.userErrors?.[0];
+  if (error) throw new Error(error.message);
+
+  return data.customerCreate.customer;
 }
+
 
 async function setMetafields(customerId: string, extra: any = {}) {
   const metafields = [
@@ -163,3 +177,4 @@ export async function POST(req: Request) {
     );
   }
 }
+
