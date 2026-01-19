@@ -1,7 +1,26 @@
 // app/api/google/exchange/route.ts
-
 import { NextResponse } from "next/server";
 
+const ALLOWED_ORIGIN = "https://stickerkiko.com";
+
+function corsHeaders(origin: string | null) {
+  const o = origin === ALLOWED_ORIGIN ? origin : ALLOWED_ORIGIN;
+  return {
+    "Access-Control-Allow-Origin": o,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+  };
+}
+
+/** 处理预检请求（CORS 关键） */
+export async function OPTIONS(req: Request) {
+  return new Response(null, {
+    status: 204,
+    headers: corsHeaders(req.headers.get("origin")),
+  });
+}
+
+/** 解析 JWT payload（暂不验签，先跑通流程） */
 function parseJwtPayload(jwt: string) {
   const [, payload] = jwt.split(".");
   const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
@@ -39,18 +58,23 @@ async function findCustomerByEmail(email: string) {
   return data.customers.edges[0]?.node || null;
 }
 
-async function createCustomer(input: { email: string; firstName: string; lastName: string }) {
+async function createCustomer(input: {
+  email: string;
+  firstName: string;
+  lastName: string;
+}) {
   const m = `
     mutation($input: CustomerInput!) {
       customerCreate(input: $input) {
         customer { id }
-        userErrors { field message }
+        userErrors { message }
       }
     }
   `;
   const data = await shopifyGraphQL(m, {
     input: { ...input, verifiedEmail: true },
   });
+
   const err = data.customerCreate.userErrors?.[0];
   if (err) throw new Error(err.message);
   return data.customerCreate.customer.id as string;
@@ -67,7 +91,7 @@ async function setMetafields(customerId: string, extra: any = {}) {
   const m = `
     mutation($metafields: [MetafieldsSetInput!]!) {
       metafieldsSet(metafields: $metafields) {
-        userErrors { field message }
+        userErrors { message }
       }
     }
   `;
@@ -78,14 +102,17 @@ async function setMetafields(customerId: string, extra: any = {}) {
 
 export async function POST(req: Request) {
   try {
-    const { code, extra, redirectUri } = await req.json();
+    const origin = req.headers.get("origin");
+    const { code, extra } = await req.json();
 
     if (!code) {
-      return NextResponse.json({ error: "Missing code" }, { status: 400 });
+      return NextResponse.json(
+        { error: "Missing code" },
+        { status: 400, headers: corsHeaders(origin) }
+      );
     }
 
-    const redirect_uri = redirectUri || "https://stickerkiko.com";
-
+    /** popup code flow 必须用 postmessage */
     const tokenResp = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -93,31 +120,31 @@ export async function POST(req: Request) {
         code,
         client_id: process.env.GOOGLE_CLIENT_ID!,
         client_secret: process.env.GOOGLE_CLIENT_SECRET!,
-        redirect_uri,
+        redirect_uri: "postmessage",
         grant_type: "authorization_code",
       }),
     });
 
     const tokenData = await tokenResp.json();
     if (!tokenResp.ok) {
-      return NextResponse.json({ error: "Google exchange failed", details: tokenData }, { status: 400 });
+      return NextResponse.json(
+        { error: "Google exchange failed", details: tokenData },
+        { status: 400, headers: corsHeaders(origin) }
+      );
     }
 
     const id_token = tokenData.id_token;
-    if (!id_token) {
-      return NextResponse.json({ error: "No id_token", details: tokenData }, { status: 400 });
-    }
-
     const payload = parseJwtPayload(id_token);
-    const email = payload.email as string | undefined;
-    if (!email) return NextResponse.json({ error: "No email in id_token" }, { status: 400 });
 
-    const firstName = (payload.given_name || "") as string;
-    const lastName = (payload.family_name || "") as string;
-    const googleSub = (payload.sub || "") as string;
+    const email = payload.email;
+    if (!email) throw new Error("No email in token");
 
-    const existing = await findCustomerByEmail(email);
-    let customerId = existing?.id as string | undefined;
+    const firstName = payload.given_name || "";
+    const lastName = payload.family_name || "";
+    const googleSub = payload.sub || "";
+
+    let customer = await findCustomerByEmail(email);
+    let customerId = customer?.id;
 
     if (!customerId) {
       customerId = await createCustomer({ email, firstName, lastName });
@@ -125,8 +152,14 @@ export async function POST(req: Request) {
 
     await setMetafields(customerId, { ...(extra || {}), google_sub: googleSub });
 
-    return NextResponse.json({ ok: true, email, customerId, nextUrl: "/account" });
+    return NextResponse.json(
+      { ok: true, email, customerId },
+      { headers: corsHeaders(origin) }
+    );
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Server error" }, { status: 500 });
+    return NextResponse.json(
+      { error: e.message || "Server error" },
+      { status: 500, headers: corsHeaders(null) }
+    );
   }
 }
