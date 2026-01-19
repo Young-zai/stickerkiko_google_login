@@ -1,4 +1,3 @@
-// app/api/google/exchange/route.ts
 import { NextResponse } from "next/server";
 
 const ALLOWED_ORIGIN = "https://stickerkiko.com";
@@ -137,7 +136,7 @@ export async function POST(req: Request) {
     const origin = req.headers.get("origin");
 
     // ✅ Google 登录不需要 extra；如果你后面做“完善资料页”再传 extra 也行
-    const { code, extra } = await req.json();
+    const { code } = await req.json();
 
     if (!code) {
       return NextResponse.json(
@@ -194,7 +193,7 @@ export async function POST(req: Request) {
     }
 
     // ✅ 只写 google_sub 这类业务字段（不需要前端传）
-    await setMetafields(customerId, { ...(extra || {}), google_sub: googleSub });
+    await setMetafields(customerId, { google_sub: googleSub });
 
     // （可选）如果你以后在“完善资料页”传 phone，就可以启用这句：
     // await updateCustomerPhoneIfProvided(customerId, extra?.phone);
