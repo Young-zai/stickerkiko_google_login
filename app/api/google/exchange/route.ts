@@ -18,7 +18,7 @@ export async function OPTIONS(req: Request) {
   });
 }
 
-/** 解析 JWT payload */
+/** 解析 JWT payload（注意：这里只是解析，不验签；生产建议验签或调用 tokeninfo） */
 function parseJwtPayload(jwt: string) {
   const [, payload] = jwt.split(".");
   const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
@@ -56,7 +56,7 @@ async function findCustomerByEmail(email: string) {
   return data.customers.edges[0]?.node || null;
 }
 
-/** 创建 customer */
+/** ✅ 创建 customer：只返回 customerId（string） */
 async function createCustomer(input: { email: string; firstName?: string; lastName?: string }) {
   const mutation = `
     mutation ($input: CustomerInput!) {
@@ -72,6 +72,7 @@ async function createCustomer(input: { email: string; firstName?: string; lastNa
       email: input.email,
       firstName: input.firstName || undefined,
       lastName: input.lastName || undefined,
+      // 注意：这里不要传 verifiedEmail（你之前已经踩坑了）
     },
   });
 
@@ -81,48 +82,60 @@ async function createCustomer(input: { email: string; firstName?: string; lastNa
   return data.customerCreate.customer.id as string;
 }
 
-/** 激活客户 */
-async function activateCustomer(customerId: string, activationToken: string, password: string) {
-  const mutation = `
-    mutation customerActivate($id: ID!, $input: CustomerActivateInput!) {
-      customerActivate(id: $id, input: $input) {
-        customer {
-          id
-          email
-        }
-        customerAccessToken {
-          accessToken
-        }
-        customerUserErrors {
-          field
-          message
-        }
+/** （可选）如果你后面做“完善资料页”，可以用它更新 phone 这种系统字段 */
+async function updateCustomerPhoneIfProvided(customerId: string, phone?: string) {
+  if (!phone) return;
+
+  const m = `
+    mutation($input: CustomerInput!) {
+      customerUpdate(input: $input) {
+        customer { id phone }
+        userErrors { field message }
       }
     }
   `;
 
-  const variables = {
-    id: customerId,
+  const data = await shopifyGraphQL(m, {
     input: {
-      activationToken: activationToken, // 确保你在这里传递正确的激活令牌
-      password: password, // 用于自动登录的密码
+      id: customerId,
+      phone, // Shopify 系统字段：后台可见
     },
-  };
+  });
 
-  const data = await shopifyGraphQL(mutation, variables);
-  const errors = data.customerActivate.customerUserErrors;
+  const err = data.customerUpdate.userErrors?.[0];
+  if (err) throw new Error(err.message);
+}
 
-  if (errors && errors.length > 0) {
-    throw new Error(errors.map((error: any) => error.message).join(", "));
-  }
+/** ✅ 写 metafields：只写业务字段（google_sub / company / vat 等） */
+async function setMetafields(customerId: string, extra: any = {}) {
+  const fields = [
+    // 只有有值才写，避免写一堆空字符串
+    extra.company ? { ownerId: customerId, namespace: "profile", key: "company", type: "single_line_text_field", value: String(extra.company) } : null,
+    extra.vat ? { ownerId: customerId, namespace: "profile", key: "vat", type: "single_line_text_field", value: String(extra.vat) } : null,
+    extra.google_sub ? { ownerId: customerId, namespace: "profile", key: "google_sub", type: "single_line_text_field", value: String(extra.google_sub) } : null,
+    { ownerId: customerId, namespace: "profile", key: "signup_source", type: "single_line_text_field", value: "google" },
+  ].filter(Boolean);
 
-  return data.customerActivate.customerAccessToken.accessToken;
+  if (fields.length === 0) return;
+
+  const m = `
+    mutation($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        userErrors { message }
+      }
+    }
+  `;
+
+  const data = await shopifyGraphQL(m, { metafields: fields });
+  const err = data.metafieldsSet.userErrors?.[0];
+  if (err) throw new Error(err.message);
 }
 
 export async function POST(req: Request) {
   try {
     const origin = req.headers.get("origin");
 
+    // ✅ Google 登录不需要 extra；如果你后面做“完善资料页”再传 extra 也行
     const { code } = await req.json();
 
     if (!code) {
@@ -132,6 +145,7 @@ export async function POST(req: Request) {
       );
     }
 
+    // popup code flow：redirect_uri=postmessage
     const tokenResp = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -161,10 +175,11 @@ export async function POST(req: Request) {
     }
 
     const payload = parseJwtPayload(id_token);
-    const email = payload.email as string | undefined;
 
+    const email = payload.email as string | undefined;
     if (!email) throw new Error("No email in token");
 
+    // ✅ Google 给你的“默认可用字段”
     const firstName = (payload.given_name || "") as string;
     const lastName = (payload.family_name || "") as string;
     const googleSub = (payload.sub || "") as string;
@@ -173,16 +188,18 @@ export async function POST(req: Request) {
     let customerId = existing?.id as string | undefined;
 
     if (!customerId) {
+      // ✅ 创建 customer：用 Google 的名字
       customerId = await createCustomer({ email, firstName, lastName });
     }
 
-    const activationToken = "generated-activation-token"; // You would need to generate or get this token
+    // ✅ 只写 google_sub 这类业务字段（不需要前端传）
+    await setMetafields(customerId, { google_sub: googleSub });
 
-    // 激活用户并获取 accessToken
-    const accessToken = await activateCustomer(customerId, activationToken, "googleAutoGeneratedPassword123");
+    // （可选）如果你以后在“完善资料页”传 phone，就可以启用这句：
+    // await updateCustomerPhoneIfProvided(customerId, extra?.phone);
 
     return NextResponse.json(
-      { ok: true, email, accessToken },
+      { ok: true, email, customerId },
       { headers: corsHeaders(origin) }
     );
   } catch (e: any) {
@@ -192,4 +209,3 @@ export async function POST(req: Request) {
     );
   }
 }
-
