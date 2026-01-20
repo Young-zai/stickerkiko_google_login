@@ -11,12 +11,76 @@ function corsHeaders(origin: string | null) {
   };
 }
 
-export async function OPTIONS(req: Request) {
-  return new Response(null, {
-    status: 204,
-    headers: corsHeaders(req.headers.get("origin")),
-  });
+export async function POST(req: Request) {
+  try {
+    const origin = req.headers.get("origin");
+    const { code } = await req.json();
+
+    if (!code) {
+      return NextResponse.json(
+        { error: "Missing code" },
+        { status: 400, headers: corsHeaders(origin) }
+      );
+    }
+
+    // 通过 Google OAuth 代码获取 id_token
+    const tokenResp = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code,
+        client_id: process.env.GOOGLE_CLIENT_ID!,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+        redirect_uri: "postmessage",  // 必须与 Google 配置的 redirect URI 一致
+        grant_type: "authorization_code",
+      }),
+    });
+
+    const tokenData = await tokenResp.json();
+    if (!tokenResp.ok) {
+      return NextResponse.json(
+        { error: "Google exchange failed", details: tokenData },
+        { status: 400, headers: corsHeaders(origin) }
+      );
+    }
+
+    const id_token = tokenData.id_token;
+    if (!id_token) {
+      return NextResponse.json(
+        { error: "No id_token returned by Google", details: tokenData },
+        { status: 400, headers: corsHeaders(origin) }
+      );
+    }
+
+    const payload = parseJwtPayload(id_token);
+    const email = payload.email as string | undefined;
+    if (!email) throw new Error("No email in token");
+
+    const firstName = (payload.given_name || "") as string;
+    const lastName = (payload.family_name || "") as string;
+    const googleSub = (payload.sub || "") as string;
+
+    let customer = await findCustomerByEmail(email);
+    let customerId = customer?.id as string | undefined;
+
+    if (!customerId) {
+      customerId = await createCustomer({ email, firstName, lastName });
+    }
+
+    await setMetafields(customerId, { google_sub: googleSub });
+
+    return NextResponse.json(
+      { ok: true, email, customerId },
+      { headers: corsHeaders(origin) }
+    );
+  } catch (e: any) {
+    return NextResponse.json(
+      { error: e?.message || "Server error" },
+      { status: 500, headers: corsHeaders(null) }
+    );
+  }
 }
+
 
 /** 解析 JWT payload */
 function parseJwtPayload(jwt: string) {
@@ -168,3 +232,4 @@ export async function POST(req: Request) {
     );
   }
 }
+
