@@ -12,13 +12,85 @@ function corsHeaders(origin: string | null) {
   };
 }
 
-export async function OPTIONS(req: Request) {
-  // 处理 CORS 预检请求
-  return new Response(null, {
-    status: 204,
-    headers: corsHeaders(req.headers.get("origin")),
-  });
+export async function POST(req: Request) {
+  try {
+    const origin = req.headers.get("origin");
+    console.log("Request received from origin:", origin);
+
+    // 获取请求中的 code
+    const { code } = await req.json();
+    if (!code) {
+      console.error("Error: Missing code");  // 输出日志，便于调试
+      return NextResponse.json(
+        { error: "Missing code" },
+        { status: 400, headers: corsHeaders(origin) }
+      );
+    }
+
+    // 使用 code 请求 id_token
+    const tokenResp = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code,
+        client_id: process.env.GOOGLE_CLIENT_ID!,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+        redirect_uri: "postmessage",  // 必须与 Google 配置的 redirect URI 一致
+        grant_type: "authorization_code",
+      }),
+    });
+
+    // 如果请求失败，返回错误信息
+    if (!tokenResp.ok) {
+      console.error("Failed to exchange code for token");
+      return NextResponse.json(
+        { error: "Failed to exchange code for token" },
+        { status: 400, headers: corsHeaders(origin) }
+      );
+    }
+
+    const tokenData = await tokenResp.json();
+    const id_token = tokenData.id_token;
+
+    if (!id_token) {
+      console.error("Google exchange failed");
+      return NextResponse.json(
+        { error: "Google exchange failed" },
+        { status: 400, headers: corsHeaders(origin) }
+      );
+    }
+
+    // 解析 id_token 获取用户信息
+    const payload = parseJwtPayload(id_token);
+    const email = payload.email as string;
+
+    if (!email) throw new Error("No email in token");
+
+    // 查询 Shopify 用户是否存在
+    const existingCustomer = await findCustomerByEmail(email);
+
+    if (existingCustomer) {
+      console.log("User exists:", existingCustomer);
+      return NextResponse.json(
+        { ok: true, email, customerId: existingCustomer.id },
+        { headers: corsHeaders(origin) }
+      );
+    }
+
+    console.log("User does not exist, returning email:", email);
+    return NextResponse.json(
+      { ok: true, email },
+      { headers: corsHeaders(origin) }
+    );
+  } catch (e: any) {
+    console.error("Error processing request:", e);
+    return NextResponse.json(
+      { error: e?.message || "Server error" },
+      { status: 500, headers: corsHeaders(null) }
+    );
+  }
 }
+
 
 // 使用 Shopify API 查询邮箱是否已存在
 async function findCustomerByEmail(email: string) {
@@ -151,3 +223,4 @@ export async function POST(req: Request) {
     );
   }
 }
+
