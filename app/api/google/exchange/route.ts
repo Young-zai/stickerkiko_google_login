@@ -56,7 +56,17 @@ function parseJwtPayload(jwt: string) {
   const [, payload] = jwt.split(".");
   const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
   const decoded = Buffer.from(normalized, "base64").toString("utf8");
-  return JSON.parse(decoded);
+  const payloadJson = JSON.parse(decoded);
+
+  // 验证 token 的有效性
+  if (payloadJson.aud !== process.env.GOOGLE_CLIENT_ID) {
+    throw new Error("Invalid audience in token");
+  }
+  if (payloadJson.iss !== "https://accounts.google.com") {
+    throw new Error("Invalid issuer in token");
+  }
+
+  return payloadJson;
 }
 
 export async function POST(req: Request) {
@@ -84,6 +94,13 @@ export async function POST(req: Request) {
       }),
     });
 
+    if (!tokenResp.ok) {
+      return NextResponse.json(
+        { error: "Failed to exchange code for token" },
+        { status: 400, headers: corsHeaders(origin) }
+      );
+    }
+
     const tokenData = await tokenResp.json();
     const id_token = tokenData.id_token;
 
@@ -110,7 +127,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // 用户不存在，返回创建新用户的信息（可以在前端使用这个信息来创建用户）
+    // 用户不存在，返回创建新用户的信息
     return NextResponse.json(
       { ok: true, email },
       { headers: corsHeaders(origin) }
