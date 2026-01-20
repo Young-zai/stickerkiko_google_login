@@ -104,8 +104,8 @@ async function activateCustomer(customerId: string, activationToken: string, pas
   const variables = {
     id: customerId,
     input: {
-      activationToken: activationToken,
-      password: password,
+      activationToken: activationToken, // 确保你在这里传递正确的激活令牌
+      password: password, // 用于自动登录的密码
     },
   };
 
@@ -192,3 +192,4 @@ export async function POST(req: Request) {
     );
   }
 }
+
