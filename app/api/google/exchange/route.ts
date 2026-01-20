@@ -1,17 +1,19 @@
 import { NextResponse } from "next/server";
 
+// 设置允许的跨域来源
 const ALLOWED_ORIGIN = "https://stickerkiko.com";
 
 function corsHeaders(origin: string | null) {
   const o = origin === ALLOWED_ORIGIN ? origin : ALLOWED_ORIGIN;
   return {
-    "Access-Control-Allow-Origin": o,
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Origin": o,  // 允许的来源
+    "Access-Control-Allow-Methods": "POST, OPTIONS",  // 允许的方法
+    "Access-Control-Allow-Headers": "Content-Type",  // 允许的头部
   };
 }
 
 export async function OPTIONS(req: Request) {
+  // 处理 CORS 预检请求
   return new Response(null, {
     status: 204,
     headers: corsHeaders(req.headers.get("origin")),
@@ -48,7 +50,7 @@ async function findCustomerByEmail(email: string) {
   });
 
   const data = await response.json();
-  return data.data.customers.edges[0]?.node || null;
+  return data.data.customers.edges[0]?.node || null;  // 返回第一个匹配的客户
 }
 
 // 解析 JWT token
@@ -73,8 +75,10 @@ export async function POST(req: Request) {
   try {
     const origin = req.headers.get("origin");
 
+    // 获取请求中的 code
     const { code } = await req.json();
     if (!code) {
+      console.error("Error: Missing code");  // 输出日志，便于调试
       return NextResponse.json(
         { error: "Missing code" },
         { status: 400, headers: corsHeaders(origin) }
@@ -89,12 +93,14 @@ export async function POST(req: Request) {
         code,
         client_id: process.env.GOOGLE_CLIENT_ID!,
         client_secret: process.env.GOOGLE_CLIENT_SECRET!,
-        redirect_uri: "postmessage", // 必须与 Google 配置的 redirect URI 一致
+        redirect_uri: "postmessage",  // 必须与 Google 配置的 redirect URI 一致
         grant_type: "authorization_code",
       }),
     });
 
+    // 如果请求失败，返回错误信息
     if (!tokenResp.ok) {
+      console.error("Failed to exchange code for token");  // 输出日志，便于调试
       return NextResponse.json(
         { error: "Failed to exchange code for token" },
         { status: 400, headers: corsHeaders(origin) }
@@ -104,13 +110,16 @@ export async function POST(req: Request) {
     const tokenData = await tokenResp.json();
     const id_token = tokenData.id_token;
 
+    // 如果没有 id_token，返回错误
     if (!id_token) {
+      console.error("Google exchange failed");  // 输出日志，便于调试
       return NextResponse.json(
         { error: "Google exchange failed" },
         { status: 400, headers: corsHeaders(origin) }
       );
     }
 
+    // 解析 id_token 获取用户信息
     const payload = parseJwtPayload(id_token);
     const email = payload.email as string;
 
@@ -120,6 +129,7 @@ export async function POST(req: Request) {
     const existingCustomer = await findCustomerByEmail(email);
 
     if (existingCustomer) {
+      console.log("User exists:", existingCustomer);  // 输出用户信息，便于调试
       // 用户已存在，返回用户信息
       return NextResponse.json(
         { ok: true, email, customerId: existingCustomer.id },
@@ -128,11 +138,13 @@ export async function POST(req: Request) {
     }
 
     // 用户不存在，返回创建新用户的信息
+    console.log("User does not exist, returning email:", email);  // 输出信息，便于调试
     return NextResponse.json(
       { ok: true, email },
       { headers: corsHeaders(origin) }
     );
   } catch (e: any) {
+    console.error("Error processing request:", e);  // 输出错误信息，便于调试
     return NextResponse.json(
       { error: e?.message || "Server error" },
       { status: 500, headers: corsHeaders(null) }
