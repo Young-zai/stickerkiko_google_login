@@ -18,126 +18,11 @@ export async function OPTIONS(req: Request) {
   });
 }
 
-/** 解析 JWT payload（注意：这里只是解析，不验签；生产建议验签或调用 tokeninfo） */
-function parseJwtPayload(jwt: string) {
-  const [, payload] = jwt.split(".");
-  const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
-  const decoded = Buffer.from(normalized, "base64").toString("utf8");
-  return JSON.parse(decoded);
-}
-
-async function shopifyGraphQL(query: string, variables: any) {
-  const shop = process.env.SHOPIFY_SHOP!;
-  const token = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN!;
-
-  const r = await fetch(`https://${shop}/admin/api/2025-07/graphql.json`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Access-Token": token,
-    },
-    body: JSON.stringify({ query, variables }),
-  });
-
-  const data = await r.json();
-  if (data.errors) throw new Error(JSON.stringify(data.errors));
-  return data.data;
-}
-
-async function findCustomerByEmail(email: string) {
-  const q = `
-    query($query: String!) {
-      customers(first: 1, query: $query) {
-        edges { node { id email firstName lastName phone } }
-      }
-    }
-  `;
-  const data = await shopifyGraphQL(q, { query: `email:${email}` });
-  return data.customers.edges[0]?.node || null;
-}
-
-/** ✅ 创建 customer：只返回 customerId（string） */
-async function createCustomer(input: { email: string; firstName?: string; lastName?: string }) {
-  const mutation = `
-    mutation ($input: CustomerInput!) {
-      customerCreate(input: $input) {
-        customer { id email }
-        userErrors { field message }
-      }
-    }
-  `;
-
-  const data = await shopifyGraphQL(mutation, {
-    input: {
-      email: input.email,
-      firstName: input.firstName || undefined,
-      lastName: input.lastName || undefined,
-      // 注意：这里不要传 verifiedEmail（你之前已经踩坑了）
-    },
-  });
-
-  const err = data.customerCreate.userErrors?.[0];
-  if (err) throw new Error(err.message);
-
-  return data.customerCreate.customer.id as string;
-}
-
-/** （可选）如果你后面做“完善资料页”，可以用它更新 phone 这种系统字段 */
-async function updateCustomerPhoneIfProvided(customerId: string, phone?: string) {
-  if (!phone) return;
-
-  const m = `
-    mutation($input: CustomerInput!) {
-      customerUpdate(input: $input) {
-        customer { id phone }
-        userErrors { field message }
-      }
-    }
-  `;
-
-  const data = await shopifyGraphQL(m, {
-    input: {
-      id: customerId,
-      phone, // Shopify 系统字段：后台可见
-    },
-  });
-
-  const err = data.customerUpdate.userErrors?.[0];
-  if (err) throw new Error(err.message);
-}
-
-/** ✅ 写 metafields：只写业务字段（google_sub / company / vat 等） */
-async function setMetafields(customerId: string, extra: any = {}) {
-  const fields = [
-    // 只有有值才写，避免写一堆空字符串
-    extra.company ? { ownerId: customerId, namespace: "profile", key: "company", type: "single_line_text_field", value: String(extra.company) } : null,
-    extra.vat ? { ownerId: customerId, namespace: "profile", key: "vat", type: "single_line_text_field", value: String(extra.vat) } : null,
-    extra.google_sub ? { ownerId: customerId, namespace: "profile", key: "google_sub", type: "single_line_text_field", value: String(extra.google_sub) } : null,
-    { ownerId: customerId, namespace: "profile", key: "signup_source", type: "single_line_text_field", value: "google" },
-  ].filter(Boolean);
-
-  if (fields.length === 0) return;
-
-  const m = `
-    mutation($metafields: [MetafieldsSetInput!]!) {
-      metafieldsSet(metafields: $metafields) {
-        userErrors { message }
-      }
-    }
-  `;
-
-  const data = await shopifyGraphQL(m, { metafields: fields });
-  const err = data.metafieldsSet.userErrors?.[0];
-  if (err) throw new Error(err.message);
-}
-
 export async function POST(req: Request) {
   try {
     const origin = req.headers.get("origin");
 
-    // ✅ Google 登录不需要 extra；如果你后面做“完善资料页”再传 extra 也行
     const { code } = await req.json();
-
     if (!code) {
       return NextResponse.json(
         { error: "Missing code" },
@@ -145,7 +30,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // popup code flow：redirect_uri=postmessage
+    // 请求 token，获取 id_token
     const tokenResp = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -153,53 +38,29 @@ export async function POST(req: Request) {
         code,
         client_id: process.env.GOOGLE_CLIENT_ID!,
         client_secret: process.env.GOOGLE_CLIENT_SECRET!,
-        redirect_uri: "postmessage",
+        redirect_uri: "postmessage", // 必须与 Google 配置的 redirect URI 一致
         grant_type: "authorization_code",
       }),
     });
 
     const tokenData = await tokenResp.json();
-    if (!tokenResp.ok) {
-      return NextResponse.json(
-        { error: "Google exchange failed", details: tokenData },
-        { status: 400, headers: corsHeaders(origin) }
-      );
-    }
-
     const id_token = tokenData.id_token;
+
     if (!id_token) {
       return NextResponse.json(
-        { error: "No id_token returned by Google", details: tokenData },
+        { error: "Google exchange failed" },
         { status: 400, headers: corsHeaders(origin) }
       );
     }
 
     const payload = parseJwtPayload(id_token);
+    const email = payload.email as string;
 
-    const email = payload.email as string | undefined;
     if (!email) throw new Error("No email in token");
 
-    // ✅ Google 给你的“默认可用字段”
-    const firstName = (payload.given_name || "") as string;
-    const lastName = (payload.family_name || "") as string;
-    const googleSub = (payload.sub || "") as string;
-
-    const existing = await findCustomerByEmail(email);
-    let customerId = existing?.id as string | undefined;
-
-    if (!customerId) {
-      // ✅ 创建 customer：用 Google 的名字
-      customerId = await createCustomer({ email, firstName, lastName });
-    }
-
-    // ✅ 只写 google_sub 这类业务字段（不需要前端传）
-    await setMetafields(customerId, { google_sub: googleSub });
-
-    // （可选）如果你以后在“完善资料页”传 phone，就可以启用这句：
-    // await updateCustomerPhoneIfProvided(customerId, extra?.phone);
-
+    // 返回用户邮箱，前端可以使用该邮箱填充 Shopify 注册表单
     return NextResponse.json(
-      { ok: true, email, customerId },
+      { ok: true, email },
       { headers: corsHeaders(origin) }
     );
   } catch (e: any) {
