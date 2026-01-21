@@ -72,19 +72,7 @@ export async function POST(req: Request) {
     const lastName = payload.family_name || "";
     const googleSub = payload.sub || "";
 
-    let customer = await findCustomerByEmail(email);
-    let customerId = customer?.id;
-
-    if (!customerId) {
-      customerId = await createCustomer({ email, firstName, lastName });
-    }
-
-    await setMetafields(customerId, { ...(extra || {}), google_sub: googleSub });
-
-    return NextResponse.json(
-      { ok: true, email, customerId },
-      { headers: corsHeaders(origin) }
-    );
+    
   } catch (e: any) {
     return NextResponse.json(
       { error: e.message || "Server error" },
@@ -92,4 +80,5 @@ export async function POST(req: Request) {
     );
   }
 }
+
 
