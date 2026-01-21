@@ -1,3 +1,4 @@
+// app/api/google/exchange/route.ts
 import { NextResponse } from "next/server";
 
 const ALLOWED_ORIGIN = "https://stickerkiko.com";
@@ -11,6 +12,7 @@ function corsHeaders(origin: string | null) {
   };
 }
 
+/** 处理预检请求（CORS 关键） */
 export async function OPTIONS(req: Request) {
   return new Response(null, {
     status: 204,
@@ -18,7 +20,7 @@ export async function OPTIONS(req: Request) {
   });
 }
 
-/** 解析 JWT payload（注意：这里只是解析，不验签；生产建议验签或调用 tokeninfo） */
+/** 解析 JWT payload（暂不验签，先跑通流程） */
 function parseJwtPayload(jwt: string) {
   const [, payload] = jwt.split(".");
   const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
@@ -48,7 +50,7 @@ async function findCustomerByEmail(email: string) {
   const q = `
     query($query: String!) {
       customers(first: 1, query: $query) {
-        edges { node { id email firstName lastName phone } }
+        edges { node { id email } }
       }
     }
   `;
@@ -58,12 +60,11 @@ async function findCustomerByEmail(email: string) {
 
 
 
+
 export async function POST(req: Request) {
   try {
     const origin = req.headers.get("origin");
-
-    // ✅ Google 登录不需要 extra；如果你后面做“完善资料页”再传 extra 也行
-    const { code } = await req.json();
+    const { code, extra } = await req.json();
 
     if (!code) {
       return NextResponse.json(
@@ -72,7 +73,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // popup code flow：redirect_uri=postmessage
+    /** popup code flow 必须用 postmessage */
     const tokenResp = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -94,26 +95,23 @@ export async function POST(req: Request) {
     }
 
     const id_token = tokenData.id_token;
-    if (!id_token) {
-      return NextResponse.json(
-        { error: "No id_token returned by Google", details: tokenData },
-        { status: 400, headers: corsHeaders(origin) }
-      );
-    }
-
     const payload = parseJwtPayload(id_token);
 
-    const email = payload.email as string | undefined;
+    const email = payload.email;
     if (!email) throw new Error("No email in token");
 
-    // ✅ Google 给你的“默认可用字段”
-    const firstName = (payload.given_name || "") as string;
-    const lastName = (payload.family_name || "") as string;
-    const googleSub = (payload.sub || "") as string;
+    const firstName = payload.given_name || "";
+    const lastName = payload.family_name || "";
+    const googleSub = payload.sub || "";
 
-    const existing = await findCustomerByEmail(email);
-    let customerId = existing?.id as string | undefined;
+    let customer = await findCustomerByEmail(email);
+    let customerId = customer?.id;
 
+    if (!customerId) {
+      customerId = await createCustomer({ email, firstName, lastName });
+    }
+
+    await setMetafields(customerId, { ...(extra || {}), google_sub: googleSub });
 
     return NextResponse.json(
       { ok: true, email, customerId },
@@ -121,7 +119,7 @@ export async function POST(req: Request) {
     );
   } catch (e: any) {
     return NextResponse.json(
-      { error: e?.message || "Server error" },
+      { error: e.message || "Server error" },
       { status: 500, headers: corsHeaders(null) }
     );
   }
