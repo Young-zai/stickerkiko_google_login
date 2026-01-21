@@ -28,38 +28,6 @@ function parseJwtPayload(jwt: string) {
   return JSON.parse(decoded);
 }
 
-async function shopifyGraphQL(query: string, variables: any) {
-  const shop = process.env.SHOPIFY_SHOP!;
-  const token = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN!;
-
-  const r = await fetch(`https://${shop}/admin/api/2025-07/graphql.json`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Access-Token": token,
-    },
-    body: JSON.stringify({ query, variables }),
-  });
-
-  const data = await r.json();
-  if (data.errors) throw new Error(JSON.stringify(data.errors));
-  return data.data;
-}
-
-async function findCustomerByEmail(email: string) {
-  const q = `
-    query($query: String!) {
-      customers(first: 1, query: $query) {
-        edges { node { id email } }
-      }
-    }
-  `;
-  const data = await shopifyGraphQL(q, { query: `email:${email}` });
-  return data.customers.edges[0]?.node || null;
-}
-
-
-
 
 export async function POST(req: Request) {
   try {
@@ -124,3 +92,4 @@ export async function POST(req: Request) {
     );
   }
 }
+
