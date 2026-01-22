@@ -57,25 +57,6 @@ async function findCustomerByEmail(email: string) {
   return data.customers.edges[0]?.node || null;
 }
 
-/** 可选：如果已存在客户，就把 google_sub 写到 metafield（你想做绑定的话很有用） */
-async function setMetafields(customerId: string, googleSub: string) {
-  const metafields = [
-    { ownerId: customerId, namespace: "profile", key: "google_sub", type: "single_line_text_field", value: String(googleSub) },
-    { ownerId: customerId, namespace: "profile", key: "signup_source", type: "single_line_text_field", value: "google" },
-  ];
-
-  const m = `
-    mutation($metafields: [MetafieldsSetInput!]!) {
-      metafieldsSet(metafields: $metafields) {
-        userErrors { message }
-      }
-    }
-  `;
-
-  const data = await shopifyGraphQL(m, { metafields });
-  const err = data.metafieldsSet.userErrors?.[0];
-  if (err) throw new Error(err.message);
-}
 
 export async function POST(req: Request) {
   try {
@@ -125,20 +106,11 @@ export async function POST(req: Request) {
 
     const firstName = (payload.given_name || "") as string;
     const lastName = (payload.family_name || "") as string;
-    const googleSub = (payload.sub || "") as string;
 
-    // ✅ 查 Shopify 是否已存在该 email
-    const existing = await findCustomerByEmail(email);
-    const exists = !!existing?.id;
-
-    // ✅ 可选：已存在就写 google_sub（用于“绑定 Google”）
-    if (exists && googleSub) {
-      await setMetafields(existing.id, googleSub);
-    }
 
     // ✅ 返回给前端：用这些字段去提交 create_customer
     return NextResponse.json(
-      { ok: true, exists, email, firstName, lastName, googleSub },
+      { ok: true, email, firstName, lastName },
       { headers: corsHeaders(origin) }
     );
   } catch (e: any) {
@@ -148,3 +120,4 @@ export async function POST(req: Request) {
     );
   }
 }
+
