@@ -56,13 +56,13 @@ async function findCustomerByEmail(email: string) {
   const data = await shopifyGraphQL(q, { query: `email:${email}` });
   return data.customers.edges[0]?.node || null;
 }
-// ✅ 新增：写入 customer metafield custom.descriptionz
+// ✅ 新增：写入 customer metafield custom.login_key
 async function setDescriptionzMetafield(customerId: string, value: string) {
   const metafields = [
     {
       ownerId: customerId,
       namespace: "custom",
-      key: "descriptionz",
+      key: "login_key",
       type: "single_line_text_field",
       value: String(value),
     },
@@ -182,4 +182,5 @@ export async function POST(req: Request) {
     );
   }
 }
+
 
