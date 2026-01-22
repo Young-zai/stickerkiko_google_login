@@ -56,6 +56,30 @@ async function findCustomerByEmail(email: string) {
   const data = await shopifyGraphQL(q, { query: `email:${email}` });
   return data.customers.edges[0]?.node || null;
 }
+// ✅ 新增：写入 customer metafield custom.descriptionz
+async function setDescriptionzMetafield(customerId: string, value: string) {
+  const metafields = [
+    {
+      ownerId: customerId,
+      namespace: "custom",
+      key: "descriptionz",
+      type: "single_line_text_field",
+      value: String(value),
+    },
+  ];
+
+  const m = `
+    mutation($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        userErrors { field message }
+      }
+    }
+  `;
+
+  const data = await shopifyGraphQL(m, { metafields });
+  const err = data.metafieldsSet.userErrors?.[0];
+  if (err) throw new Error(err.message);
+}
 
 /** 可选：如果已存在客户，就把 google_sub 写到 metafield（你想做绑定的话很有用） */
 async function setMetafields(customerId: string, googleSub: string) {
@@ -135,6 +159,16 @@ export async function POST(req: Request) {
     if (exists && googleSub) {
       await setMetafields(existing.id, googleSub);
     }
+    // ✅ 新增：如果 customer 已存在（或已被创建完成），写入 descriptionz metafield
+    try {
+      const existing = await findCustomerByEmail(email);
+      if (existing?.id) {
+        await setDescriptionzMetafield(existing.id, "signup_with_google");
+      }
+    } catch (err) {
+      // 不影响你原有登录流程：写 metafield 失败不阻断
+      console.error("set descriptionz metafield failed:", err);
+    }
 
     // ✅ 返回给前端：用这些字段去提交 create_customer
     return NextResponse.json(
@@ -148,3 +182,4 @@ export async function POST(req: Request) {
     );
   }
 }
+
